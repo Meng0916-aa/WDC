@@ -278,6 +278,84 @@ python -m pytest tests/ -q
 
 ---
 
+## 单帧文件夹合并 (One-frame-per-file → Sequence NPZ)
+
+Xiris WeldStudio 有两种 `.xtherm` 导出风格：
+
+| 导出方式 | 一个文件包含 | 处理路径 |
+| --- | --- | --- |
+| **多帧合一** | 整段录制的所有帧 (header + N × frame_bytes) | 走 register + probe + process 主流程 |
+| **一帧一文件** | 一帧 (header + 1 × frame_bytes) | **先 merge，再 dedup，再 process** |
+
+判别方式：probe 第一个文件后，如果 `n_frames = 1` 且文件夹里有大量同形态文件，几乎可以确定是"一帧一文件"模式。本项目的当前实际数据就是这种：
+
+- 文件大小 = **655416 bytes** (`640 × 512 × uint16 = 655360` + **header_offset = 56**)
+- `n_frames = 1`, Tmin / Tmax / Tmean 物理合理
+
+### 合并步骤
+
+```bash
+python scripts/merge_xtherm_folder.py --config configs/default.yaml \
+    --input-dir data/raw/B000/sample01 \
+    --sample-id B000_sample01 --B-mT 0 \
+    --output data/processed/B000_sample01_temperature_sequence.npz
+```
+
+可选参数：
+
+- `--pattern "*.xtherm"`：默认匹配，需要兼容大小写或其它扩展名时改这里。
+- `--recursive`：扫描 `--input-dir` 下的所有子目录。
+
+### 关键行为
+
+1. **不修改原始 `.xtherm` 文件**——纯只读读取。
+2. **按文件名自然排序**：`frame2.xtherm` 排在 `frame10.xtherm` 之前（普通字典序会反过来）。
+3. **每个文件严格按 1 帧验证**：用 `read_xtherm(..., expected_frames=1)`；尺寸对不上直接抛错，不做 silent reshape。
+4. **温度统一换算**：`raw_value * temperature_scale = degC`；输出 `float32`，shape `[T, H, W]`。
+
+### 输出 NPZ 字段
+
+必填（spec 要求）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `temperature` | float32 `[T,H,W]` | 摄氏度温度序列 |
+| `source_files` | str array | 合并顺序对应的相对路径（PROJECT_ROOT 之下时） |
+| `fps` | float | 来自 `configs/default.yaml` |
+| `width`, `height` | int | 来自 config |
+| `header_offset` | int | 来自 config（项目实际是 56） |
+| `temperature_scale` | float | 来自 config（项目默认 0.1） |
+| `sample_id` | str | 来自 CLI |
+| `B_mT` | float | 来自 CLI |
+
+附加溯源字段（与 `xtherm-reader / experiment-metadata` skills 约定一致，方便下游 dedup / process / export 直接用）：
+
+`dtype`, `endian`, `run_id`, `laser_power_w`, `scan_speed_mm_min`, `powder_feed_g_min`, `powder`, `substrate`, `n_frames`, `input_dir`。
+
+### 衔接重复帧检测
+
+合并完成的 NPZ 可以直接喂给下一段 QA：
+
+```bash
+python scripts/detect_duplicate_frames.py --config configs/default.yaml \
+    --npz data/processed/B000_sample01_temperature_sequence.npz
+```
+
+`detect_duplicate_frames.py` 的 `--npz` 模式只要求输入 NPZ 含 `temperature` 键；其他溯源字段（`fps`, `sample_id`, `B_mT`, ...）如果存在，会被自动透传到 dedup 输出的 NPZ 中，避免链路里手动复制配置。
+
+### 工作流位置
+
+```
+真实 xtherm 抵达
+  ├─ 多帧合一文件: register → probe → calibrate → check_ready → process → export
+  └─ 一帧一文件 : merge_xtherm_folder → detect_duplicate_frames
+                   → extract_features_from_npz → 后续绘图 / PyTorch
+```
+
+第二条路径目前不强制写回数据库——`scripts/extract_features_from_npz.py` 直接产出 features CSV，可立即喂入论文图表脚本 / PyTorch dataset；若仍希望以数据库为唯一事实源，可把合并后的单个大文件再次登记进 `xtherm_files`（其时 `n_frames` 等于合并后的帧数）。
+
+---
+
 ## 重复帧检测与去重 (Duplicate-frame QA)
 
 在 Xiris VXIR-3000 + WeldStudio 高负载或高速 AOI 模式下，偶尔会把同一帧 raw payload 流式输出两次。这会让帧数虚高、`Tmean` 偏倚、`time_s = frame_index / fps` 时间轴整体右移。本工具是一道**独立 QA 阶段**——
@@ -358,6 +436,72 @@ time_s = original_indices.astype(np.float64) / fps    # 真实时间, 不是 0..
 | 强磁场试验 (B=120 mT) 噪声偏大 | `1.0 degC` | `10.0 degC` |
 
 不确定时**先不带阈值**只跑 exact，看到底有没有真正的完全重复；有再用阈值二次扫描。
+
+---
+
+## 从合并 NPZ 提取特征 (Extract features from merged NPZ)
+
+`scripts/extract_features_from_npz.py` 是 NPZ 驱动的特征提取入口——和数据库驱动的 `src.pipeline.process_run` 并列，复用同一套 `compute_gradients / extract_frame_features` 核函数，只是不读 `xtherm_files` 表、不写 `frame_features / processing_results`。
+
+### 调用方式
+
+```bash
+# 最常用 (--output 缺省时, 自动剥离 _temperature_dedup / _temperature_sequence 后缀)
+python scripts/extract_features_from_npz.py --config configs/default.yaml \
+    --input data/processed/B000_sample01_temperature_sequence_temperature_dedup.npz
+
+# 显式指定输出
+python scripts/extract_features_from_npz.py --config configs/default.yaml \
+    --input data/processed/B000_sample01_temperature_sequence_temperature_dedup.npz \
+    --output data/features/B000_sample01_temperature_sequence_features.csv
+
+# 额外保存一份逐帧 G 统计 NPZ (Gmax/Gmean/Gstd as arrays, 方便绘图脚本读)
+python scripts/extract_features_from_npz.py --config configs/default.yaml \
+    --input data/processed/B000_sample01_temperature_sequence_temperature_dedup.npz \
+    --save-gradient-stats-npz data/features/B000_sample01_gradient_stats.npz
+```
+
+### 计算了什么
+
+逐帧（默认 `gaussian_sigma_px=0.0`，可在 YAML 中调高做降噪）：
+
+- `Gx = ∂T/∂x`、`Gy = ∂T/∂y`、`G = sqrt(Gx² + Gy²)`，单位 `degC/mm`。
+- 帧特征：`Tmax / Tmean / Tstd / Gmax / Gmean / Gstd / high_temp_area`。
+
+CSV 列顺序（用户合约）：
+
+```
+frame, time_s, Tmax, Tmean, Tstd, Gmax, Gmean, Gstd, high_temp_area
+```
+
+### time_s 优先级
+
+| 顺位 | 来源 | 说明 |
+| --- | --- | --- |
+| 1 | NPZ 中 `original_frame_indices` ÷ `fps` | dedup 输出会带这个字段，**保留原始时间轴**（剔除帧后仍正确） |
+| 2 | `arange(T) / fps` | NPZ 没有 `original_frame_indices` 时回退 |
+| 3 | `NaN` | NPZ 与 config 都没有 fps 时（不可达，因为 config 必填 fps） |
+
+fps 来源优先级：**NPZ.fps > config.camera.fps**。这让一段 60 fps 录制 NPZ 不会被 config 中的默认 180 fps 强行覆盖。
+
+### 缺标定时的行为
+
+如果 `configs/default.yaml` 里 `dx_mm_per_pixel` 或 `dy_mm_per_pixel` 是 `null`：脚本**立即抛 `ValueError`**，提示先跑 `check_ready_for_real_data.py`，不会处理半个文件就崩。
+
+### 关于 Gx / Gy / G 三维数组
+
+**默认不会保存完整的 `[T, H, W]` 梯度立方体**——一段 410 帧、640×512 的录制 3 个梯度通道是 `410 × 640 × 512 × 3 × 4 byte ≈ 1.6 GB`，对一段实验来说不划算。
+
+需要时用 `--save-gradient-stats-npz <path>`，只会写入逐帧标量 `(Gmax, Gmean, Gstd)`（与 CSV 等价但 numpy 数组形式）。若以后真的需要全场梯度做可视化或 PyTorch dataset，建议按需重算或新增一个独立的"梯度立方体导出"脚本。
+
+### 与数据库驱动路径的并列关系
+
+| 入口 | 适用场景 | 写回数据库 |
+| --- | --- | --- |
+| `process_registered_file.py` / `batch_process_database.py` | 多帧合一 `.xtherm`，已登记入库 | ✅ `frame_features` + `processing_results` |
+| `extract_features_from_npz.py`（本节） | 一帧一文件经过 `merge_xtherm_folder` → `detect_duplicate_frames` 后的 NPZ | ❌ 不写库，只产 CSV |
+
+两条路径产出的 CSV 列名结构一致（`Tmax / Tmean / Tstd / Gmax / Gmean / Gstd / high_temp_area`），唯一差异是 NPZ 路径用 `frame` 列名而非 `frame_index`——下游论文图表脚本如果同时消费两种来源，只需统一一次列名即可。
 
 ---
 

@@ -12,28 +12,13 @@ env/
 *.env
 .env
 
-# Local database
+# Local database (binary db excluded; .gitkeep preserved)
 database/*.db
 database/*.sqlite
 database/*.sqlite3
-
-# Raw and processed experimental data
-data/raw/*
-data/processed/*
-data/features/*
-results/figures/*
-
-# Keep empty folders
 !database/.gitkeep
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!data/features/.gitkeep
-!results/figures/.gitkeep
 
-# Large thermal / calibration files
-*.xtherm
-*.xflux
-*.xir
+# Camera calibration files (vendor-specific; do not publish)
 *.tcal
 *.nuc
 *.dp
@@ -45,3 +30,8 @@ results/figures/*
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Note: data/raw, data/processed, data/features, results/figures and
+# *.xtherm / *.npz / *.csv / *.png are now versioned through Git LFS
+# (see .gitattributes). The previous wildcard exclusions for those
+# directories have been removed to allow LFS-tracked uploads.

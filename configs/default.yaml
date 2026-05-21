@@ -28,12 +28,12 @@ camera:
   fps: 180                  # 帧率, Hz
   dtype: uint16             # 单像素原始数据类型
   endian: little            # 字节序: little | big
-  header_offset: 0          # 文件头字节数; 真实数据登记前应通过 format_probe 校核
+  header_offset: 56          # 文件头字节数; 真实数据登记前应通过 format_probe 校核
   temperature_scale: 0.1    # raw_value * scale = temperature in °C
   # 像素到毫米的换算 (受相机标定与工作距离影响)。
   # 当前为占位 null —— 真实实验前必须通过靶标标定测得并写回数据库, 否则梯度计算会拒绝运行。
-  dx_mm_per_pixel: null
-  dy_mm_per_pixel: null
+  dx_mm_per_pixel: 0.01840
+  dy_mm_per_pixel: 0.01840
 
 # -----------------------------------------------------------------------------
 # 实验默认参数 (CLAUDE.md §1.1)
@@ -60,7 +60,7 @@ processing:
   # CoCrNi/316L 体系熔点约 1400°C, 默认设 1000°C 作为安全的高温区阈值。
   high_temp_threshold_C: 1000.0
   # 梯度计算前是否对每帧做高斯平滑 (sigma=像素), 0 表示不平滑。
-  gaussian_sigma_px: 0.0
+  gaussian_sigma_px: 1.0
   # 单文件批处理时每帧的进度日志步长。
   log_every_frames: 200
   # 单文件最大处理帧数上限 (None 表示读完整个文件)
@@ -71,7 +71,7 @@ processing:
 # -----------------------------------------------------------------------------
 format_probe:
   # 尝试的 header_offset 候选 (字节)
-  header_offset_candidates: [0, 128, 256, 512, 1024, 2048, 4096]
+  header_offset_candidates: [0, 56, 128, 256, 512, 1024, 2048, 4096]
   # 估算温度范围时, 抽取的帧索引 (相对每个候选的总帧数). first/middle/last
   sample_frames: [0, "middle", -1]
 

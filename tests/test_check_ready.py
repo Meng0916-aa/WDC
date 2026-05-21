@@ -32,15 +32,28 @@ def fake_project(tmp_path: Path, monkeypatch) -> Path:
     """Build a minimal project tree under tmp_path; patch PROJECT_ROOT to it.
 
     Always includes:
-      configs/default.yaml (copied verbatim from the real repo)
+      configs/default.yaml (copied from the real repo, then sanitized to a
+                            known "uncalibrated" state — see below)
       database/ data/raw/ data/processed/ data/features/ results/figures/  (empty)
     Does NOT create the database file itself; tests decide whether to call _init_db.
+
+    The copied YAML is forcibly rewritten so that dx_mm_per_pixel and
+    dy_mm_per_pixel are ``null``, regardless of whatever calibration values
+    happen to live in the production YAML on disk. This decouples the
+    readiness-check tests from whatever real-data calibration the user has
+    committed to ``configs/default.yaml`` — those tests are about behavior of
+    the "no calibration yet" branch, not about specific YAML values.
     """
+    import re
+
     (tmp_path / "configs").mkdir()
-    shutil.copyfile(
-        REPO_ROOT / "configs" / "default.yaml",
-        tmp_path / "configs" / "default.yaml",
-    )
+    yaml_dst = tmp_path / "configs" / "default.yaml"
+    shutil.copyfile(REPO_ROOT / "configs" / "default.yaml", yaml_dst)
+    text = yaml_dst.read_text(encoding="utf-8")
+    text = re.sub(r"(?m)^(\s*dx_mm_per_pixel:)\s*\S+", r"\1 null", text)
+    text = re.sub(r"(?m)^(\s*dy_mm_per_pixel:)\s*\S+", r"\1 null", text)
+    yaml_dst.write_text(text, encoding="utf-8")
+
     for d in ("database", "data/raw", "data/processed", "data/features", "results/figures"):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     import src.utils.paths as paths_mod
@@ -119,7 +132,10 @@ def test_fully_ready_when_dx_dy_set(fake_project, tmp_path):
 def test_header_offset_zero_emits_probe_hint(fake_project, tmp_path):
     _init_db(tmp_path)
     cfg = load_config("configs/default.yaml")
-    assert cfg.camera.header_offset == 0
+    # Decouple the test from whatever header_offset currently lives in the
+    # checked-in YAML (real data sites may have updated it to a probed value
+    # like 56). The test's intent is to verify the BEHAVIOR for offset==0.
+    cfg.camera.header_offset = 0
 
     report = cr.check_readiness(cfg)
     hdr = _find(report.checks, "camera.header_offset")
