@@ -139,6 +139,7 @@ python scripts/check_ready_for_real_data.py --config configs/default.yaml
 6. **如果实际采集帧率不是 180 fps，需要修改 `fps`**，否则 `frame_features.time_s = frame_index / fps` 这条时间轴会错位，所有后续基于时间的分析都跟着错。
 7. **当前 `temperature_scale` 默认为 `0.1`**，即 `raw_value × 0.1 = degC`；如果 Xiris 实际导出配置是另一刻度，必须在 YAML 中改这个值。
 8. **当前阶段不处理 emissivity / transmissivity 的后处理重映射**——默认 Xiris / WeldStudio 已按工件设定的发射率输出温度数据；如果以后需要后处理发射率修正，会新增一个独立标定模块，不在本框架第一版范围。
+9. **怀疑相机有重复帧 / 丢帧（特别在强磁场或高速 AOI 模式下）**：用 `scripts/detect_duplicate_frames.py` 生成去重 NPZ + 审计 CSV；**不要**直接删除原始 `.xtherm`。详见 [`docs/REAL_DATA_WORKFLOW.md`](docs/REAL_DATA_WORKFLOW.md) 的"重复帧检测与去重"小节。
 
 ---
 

@@ -278,6 +278,89 @@ python -m pytest tests/ -q
 
 ---
 
+## 重复帧检测与去重 (Duplicate-frame QA)
+
+在 Xiris VXIR-3000 + WeldStudio 高负载或高速 AOI 模式下，偶尔会把同一帧 raw payload 流式输出两次。这会让帧数虚高、`Tmean` 偏倚、`time_s = frame_index / fps` 时间轴整体右移。本工具是一道**独立 QA 阶段**——
+
+**核心原则**
+
+1. **不要直接修改或删除原始 `.xtherm` 文件**——它是溯源链的根。
+2. 推荐路线：生成一个**去重后的 NPZ + 一份审计 CSV**，原 `.xtherm` 保持只读。
+3. **exact duplicate** (`np.array_equal` 相邻两帧完全一致) 默认会被自动剔除。
+4. **near duplicate** (差异 ≤ MAE / max_abs 阈值) 默认**只标记，不删除**——边界态留给人工判断。
+5. NPZ 中保留 `original_frame_indices`，可在后续重建任何按帧索引/时间的对齐关系。
+6. 这一步**不会改 `xtherm_files.status`，也不会覆盖 `processing_results`**——纯旁路工具。
+
+### 调用方式
+
+两种输入方式互斥：
+
+```bash
+# A. 从数据库登记记录读取 (推荐): 自动带 sample_id / B_mT / run_id 等元数据
+python scripts/detect_duplicate_frames.py --config configs/default.yaml --file-id 1
+
+# 严格一些, 同时检测近似重复 (只标记)
+python scripts/detect_duplicate_frames.py --config configs/default.yaml --file-id 1 \
+    --mae-threshold 0.5 --max-abs-threshold 5.0
+
+# 真正要把 near duplicate 也删掉时, 加 --remove-near-duplicates
+python scripts/detect_duplicate_frames.py --config configs/default.yaml --file-id 1 \
+    --mae-threshold 0.5 --max-abs-threshold 5.0 --remove-near-duplicates
+
+# B. 直接对一个已有 NPZ 做去重 (该 NPZ 必须含 key 'temperature', shape [T,H,W])
+python scripts/detect_duplicate_frames.py --config configs/default.yaml \
+    --npz data/processed/B000_sample01_temperature.npz
+```
+
+阈值单位与输入数组单位相同。pipeline 输出的温度是 `degC`，所以 `--mae-threshold 0.5` 表示"逐像素平均偏差 ≤ 0.5 degC 视为近似重复"。
+
+### 输出
+
+| 文件 | 路径 (默认) | 内容 |
+| --- | --- | --- |
+| 审计 CSV | `data/features/{sample_id}_file{file_id}_duplicate_frames.csv` | 每帧一行：`frame_index, prev_frame_index, is_exact_duplicate, mae_to_prev, max_abs_diff_to_prev, is_near_duplicate, action` |
+| 去重 NPZ | `data/processed/{sample_id}_file{file_id}_temperature_dedup.npz` | 见下 |
+
+NPZ 内嵌的字段（用 `np.load` 后按 key 取值）：
+
+- **温度数据**：`temperature` (shape `[T_kept, H, W]`, float32 degC), `width`, `height`
+- **重建时间轴**：`original_frame_indices` (留作回归原始时间), `removed_frame_indices`, `fps`
+- **溯源**：`source_file_id` 或 `source_npz`（互斥）, `source_file`(相对路径)
+- **实验元数据**（仅 `--file-id` 模式带）：`sample_id`, `B_mT`, `run_id`, `laser_power_w`, `scan_speed_mm_min`, `powder_feed_g_min`, `powder`, `substrate`, `temperature_scale`, `dtype`, `endian`, `header_offset`
+- **审计指针**：`duplicate_report_path`（指向 CSV 的相对路径）
+- **统计**：`n_frames_original`, `n_frames_kept`, `n_frames_removed`, `n_exact_duplicates`, `n_near_duplicates`, `remove_near_duplicates`, `mae_threshold`, `max_abs_threshold`
+
+### 重建原始时间轴
+
+如果后续要在论文 / 模型里恢复"被剔除的帧应当在哪个时间点"，用：
+
+```python
+import numpy as np
+data = np.load("data/processed/B000_sample01_file1_temperature_dedup.npz")
+original_indices = data["original_frame_indices"]     # 每个保留帧的原始 idx
+fps = float(data["fps"])
+time_s = original_indices.astype(np.float64) / fps    # 真实时间, 不是 0..T_kept-1 / fps
+```
+
+直接用 `np.arange(T_kept) / fps` 会让时间轴漂移；务必用 `original_frame_indices`。
+
+### 何时跑这一步
+
+- **建议**：把它放在 `register → probe → (calibrate dx/dy) → check_ready=0 → 单文件处理 → 批处理` 流程的**单文件处理之前**——一旦发现 exact duplicate 比例显著，先去重再算梯度 / 特征，可避免误差累积。
+- **可选**：所有文件都跑过批处理后再回头跑一次 dedup，对比 `data/features/all_features.csv` 与 dedup 后的特征，作为质控复核。
+
+### 典型阈值起点
+
+| 工况 | `--mae-threshold` | `--max-abs-threshold` |
+| --- | --- | --- |
+| 高速 AOI / 1000 fps, 噪声相对小 | `0.1 degC` | `1.0 degC` |
+| 全画幅 180 fps, 普通工况 | `0.5 degC` | `5.0 degC` |
+| 强磁场试验 (B=120 mT) 噪声偏大 | `1.0 degC` | `10.0 degC` |
+
+不确定时**先不带阈值**只跑 exact，看到底有没有真正的完全重复；有再用阈值二次扫描。
+
+---
+
 ## FAQ
 
 **Q: probe 给出多个 offset 都"看起来合理"，怎么办？**
