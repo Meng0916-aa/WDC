@@ -38,8 +38,8 @@ results/figures/*
 *.nuc
 *.dp
 
-# Local Claude settings
-.claude/settings.local.json
+# Local Claude settings & skills (user's local tooling, not project content)
+.claude/
 
 # OS / editor
 .DS_Store
