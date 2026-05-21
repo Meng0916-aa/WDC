@@ -1,0 +1,83 @@
+# =============================================================================
+# CoCrNi / 316L 稳恒磁场辅助多道激光熔覆温度场分析项目 — 默认配置
+# 项目根目录: D:\GEJ-WDC
+# =============================================================================
+# 所有路径都相对于项目根目录解析（见 src/utils/paths.py 的 PROJECT_ROOT）。
+# 不要把绝对路径硬编码到代码中。
+
+# -----------------------------------------------------------------------------
+# 项目路径
+# -----------------------------------------------------------------------------
+paths:
+  database: database/thermal_cladding.db
+  data_raw: data/raw
+  data_processed: data/processed
+  data_features: data/features
+  results_figures: results/figures
+
+# -----------------------------------------------------------------------------
+# Xiris VXIR-3000 红外相机默认参数
+# .xtherm 是 Xiris 设备导出的二进制温度数据文件，单帧为 width*height 的
+# uint16 数组，按 frame 依次拼接。temperature_C = raw_value * temperature_scale
+# 本节默认值用于"未在数据库中显式指定"时的回退；登记文件时可逐条覆盖。
+# -----------------------------------------------------------------------------
+camera:
+  model: "Xiris VXIR-3000"
+  width: 640                # 像素 (列数, axis=1)
+  height: 512               # 像素 (行数, axis=0)
+  fps: 180                  # 帧率, Hz
+  dtype: uint16             # 单像素原始数据类型
+  endian: little            # 字节序: little | big
+  header_offset: 0          # 文件头字节数; 真实数据登记前应通过 format_probe 校核
+  temperature_scale: 0.1    # raw_value * scale = temperature in °C
+  # 像素到毫米的换算 (受相机标定与工作距离影响)。
+  # 当前为占位 null —— 真实实验前必须通过靶标标定测得并写回数据库, 否则梯度计算会拒绝运行。
+  dx_mm_per_pixel: null
+  dy_mm_per_pixel: null
+
+# -----------------------------------------------------------------------------
+# 实验默认参数 (CLAUDE.md §1.1)
+# 用于 init_database.py 创建默认 experiment 行;
+# 每个 sample 由 register_xtherm_files.py 通过 --B-mT / --sample-id 指定。
+# -----------------------------------------------------------------------------
+experiment:
+  name: "CoCrNi_on_316L_default"
+  powder_material: "CoCrNi"
+  substrate_material: "316L"
+  laser_power_W: 450.0
+  scan_speed_mm_per_min: 800.0
+  powder_feed_rate_g_per_min: 40.0
+  hatch_spacing_mm: 0.8
+  # 实验设计中扫描的磁场强度档位 (mT), 仅作为参考集合;
+  # 实际 sample 的 B 由 CLI 参数 --B-mT 决定, 不强制限定在此集合内。
+  B_levels_mT: [0, 40, 80, 120]
+
+# -----------------------------------------------------------------------------
+# 处理参数
+# -----------------------------------------------------------------------------
+processing:
+  # 高温区面积阈值 (°C). 用于统计每帧高温像素数量, 间接反映熔池面积。
+  # CoCrNi/316L 体系熔点约 1400°C, 默认设 1000°C 作为安全的高温区阈值。
+  high_temp_threshold_C: 1000.0
+  # 梯度计算前是否对每帧做高斯平滑 (sigma=像素), 0 表示不平滑。
+  gaussian_sigma_px: 0.0
+  # 单文件批处理时每帧的进度日志步长。
+  log_every_frames: 200
+  # 单文件最大处理帧数上限 (None 表示读完整个文件)
+  max_frames: null
+
+# -----------------------------------------------------------------------------
+# format_probe 格式探测
+# -----------------------------------------------------------------------------
+format_probe:
+  # 尝试的 header_offset 候选 (字节)
+  header_offset_candidates: [0, 128, 256, 512, 1024, 2048, 4096]
+  # 估算温度范围时, 抽取的帧索引 (相对每个候选的总帧数). first/middle/last
+  sample_frames: [0, "middle", -1]
+
+# -----------------------------------------------------------------------------
+# 日志
+# -----------------------------------------------------------------------------
+logging:
+  level: INFO     # DEBUG | INFO | WARNING | ERROR
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

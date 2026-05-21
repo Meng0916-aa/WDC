@@ -1,0 +1,47 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+*.env
+.env
+
+# Local database
+database/*.db
+database/*.sqlite
+database/*.sqlite3
+
+# Raw and processed experimental data
+data/raw/*
+data/processed/*
+data/features/*
+results/figures/*
+
+# Keep empty folders
+!database/.gitkeep
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/features/.gitkeep
+!results/figures/.gitkeep
+
+# Large thermal / calibration files
+*.xtherm
+*.xflux
+*.xir
+*.tcal
+*.nuc
+*.dp
+
+# Local Claude settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
